@@ -5,7 +5,7 @@
 #include <SDI12.h>
 #include "RTClib.h"
 #include <Wire.h>
-#include <SD.h>
+#include <SDfat.h>
 #include <DFRobot_ADS1115.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
