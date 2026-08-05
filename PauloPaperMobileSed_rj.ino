@@ -14,6 +14,7 @@
 #include "QuickMedianLib.h"
 // #include <FlashAsEEPROM.h> Not using this right now
 
+
 #define TEST_LOOP             (false)     //Run test loop instead of actual loop
 #define SLEEP_ENABLED         (true)    //Disable to keep serial coms alive for testing
 #define FIRMWARE_VERSION      (001)
@@ -83,6 +84,7 @@ int wetReadTimes = DEFAULT_READ_COUNT;
 int minh2o = DEFAULT_MIN_H2O;
 int turbPeriod = DEFAULT_TURB_READ_PERIOD;
 // int lastSDSize = 1;
+
 
 const char *monthName[12] = {
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -173,6 +175,7 @@ float turbidity;
 float turbidity_air_avg;
 
 uint32_t time_now;
+
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////    SETUP           ///////////////////////////////////////////////////////////
@@ -348,6 +351,9 @@ pinMode(TURBIDITY_MOTOR_FORWARD, OUTPUT);
     crashNflash(2);
   }
   sendLoRaIgnore("RTC started");
+
+  // testing callback for SD.h to write time metadata
+  SdFile::dateTimeCallback(dateTime);
 
   DateTime now = rtc.now();
   int Hour;
@@ -1272,4 +1278,14 @@ void delayUsingMillis(int period){
     while (time_now + period > millis()) {
       // Wait approx period
     }
+}
+
+// Function for callback for SD.h to write time metadata
+void dateTime(uint16_t* date, uint16_t* time) {
+  DateTime now = rtc.now();
+  // return date using FAT_DATE macro to format fields
+  *date = FAT_DATE(now.year(), now.month(), now.day());
+
+  // return time using FAT_TIME macro to format fields
+  *time = FAT_TIME(now.hour(), now.minute(), now.second());
 }
