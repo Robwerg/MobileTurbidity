@@ -174,6 +174,8 @@ float tempHousingMedian;
 float turbidity;
 float turbidity_air_avg;
 
+int adc2 = 0;
+
 uint32_t time_now;
 
 
@@ -493,6 +495,10 @@ void loop () {
     }
   }
 
+
+
+adc2 = ads.readVoltage(2); 
+
   if (sensor.ALS.measure_2[0] > minh2o) {
     analogWrite(pumpspeed, 255); //max 255
     sendLoRaIgnore("begin dry read");
@@ -678,7 +684,7 @@ void rain_isr() {
 
 void LoRaUpdate() {
   char *pmsg;
-  String LoRaString = "PKT:" + normTimestamp + dataString;
+  String LoRaString = "PKT:" + normTimestamp + dataString + adc2;
   pmsg = (char*)LoRaString.c_str();
   rf95.send((uint8_t *)pmsg, strlen(pmsg) + 1);
   rf95.waitPacketSent();    //This takes 189ms
@@ -952,8 +958,9 @@ void buildCSVDataString() {
       dataString += String(sensor.USS.measure[i], 2) + ",";
     }
   }
-  dataString += String(turbidity, 2) + ",";
-  dataString += String(tempHousingMedian, 2) + ",";
+  dataString += String(turbidity_air_avg, 2) + " turbair average"+ ","; //RJ added
+  dataString += String(turbidity, 2) + " turbwet average"+ ","; //RJ removed
+  dataString += String(tempHousingMedian, 2) + " tempHousingMedian"+ ","; //RJ removed
 }
 
 void configRead() {
