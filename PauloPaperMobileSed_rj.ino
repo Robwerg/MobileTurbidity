@@ -362,8 +362,9 @@ pinMode(TURBIDITY_MOTOR_FORWARD, OUTPUT);
   for (monthIndex = 0; monthIndex < 12; monthIndex++) {
     if (strcmp(Month, monthName[monthIndex]) == 0) break;
   }
-  int uploadTime = Min + Hour * 60 + Day * 24 * 60 + (monthIndex + 1) * 24 * 60 * 31;
-  int RTCTime = now.minute() + now.hour() * 60 + now.day() * 24 * 60 + now.month() * 24 * 60 * 31;
+  DateTime compileTime = DateTime(Year, monthIndex + 1, Day, Hour, Min, Sec);
+  uint32_t uploadTime = compileTime.unixtime();
+  uint32_t RTCTime = now.unixtime();
   if (RTCTime < uploadTime || now.year() < Year) {
     if (Sec >= 60 - RTC_OFFSET_S) {
       Min = Min + 1;
