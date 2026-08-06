@@ -57,8 +57,8 @@
 #define pumpspeed             (3) //D3 D4 D5 D9 are pwm output pins 8bit
 #define TURB_DRY_READ    "TURBDRY.csv"
 #define TURB_WET_READ   "TURBRAW.csv"
-#define DEFAULT_PUMP_TIME 10
-#define DEFAULT_BACKFLUSH 10
+#define DEFAULT_PUMP_TIME 2
+#define DEFAULT_BACKFLUSH 2
 #define DEFAULT_READ_COUNT 10
 #define DEFAULT_MIN_H2O 20
 #define DEFAULT_TURB_READ_PERIOD 1000
@@ -186,13 +186,12 @@ uint32_t time_now;
 void setup () {
   setupWDT( WATCHDOG_TIMER_MS );
   analogReference(AR_INTERNAL2V23); //For internal battery level calculation
-pinMode(TURBIDITY_MOTOR_FORWARD, OUTPUT);
-    digitalWrite(TURBIDITY_MOTOR_FORWARD, LOW); // Turn off forward pump
-  pinMode(TURBIDITY_MOTOR_REVERSE_PIN, OUTPUT);
-    digitalWrite(TURBIDITY_MOTOR_FORWARD, LOW); // Turn off forward pump
+  pinMode(TURBIDITY_MOTOR_FORWARD, OUTPUT); // set pump pin to output
+  pinMode(TURBIDITY_MOTOR_REVERSE_PIN, OUTPUT); // set reverse pump pin to output
+  digitalWrite(TURBIDITY_MOTOR_FORWARD, LOW); // Turn off forward pump
   digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, LOW); // Turn off reverse pump
 
-  pinMode(pumpspeed, OUTPUT);
+  pinMode(pumpspeed, OUTPUT); // set pump speed pin to output
 
 
 
@@ -237,7 +236,8 @@ pinMode(TURBIDITY_MOTOR_FORWARD, OUTPUT);
   OneWireTempSetup(); //Must auto detect sensors BEFORE configRead()
   configRead();
   sendLoRaIgnore("Config updated");
-
+  sendLoRaIgnore("forward pump time = " + String(tpumptme) + " sec"); //ensuring tpumptme is pulled from config.
+  sendLoRaIgnore("reverse pump time = " + String(tbflshtm) + " sec"); //ensuring tpumptme is pulled from config.
 
   while (LoRaRepeater) {
     resetWDT();
@@ -511,9 +511,9 @@ adc2 = ads.readVoltage(2);
     sendLoRaIgnore("turn on forward pump for " + (String(tpumptme)) + " sec");
     forwardPump();
     sendLoRaIgnore("begin wet read");
-    turbidity = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float)); //RJ added 18/05/2026
     //delay(1000);
     TurbMeasure(TURB_WET_READ, wetReadTimes);
+    turbidity = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float)); //RJ added 18/05/2026
     sendLoRaIgnore("turn off forward pump");
     //delay(1000);
     digitalWrite(TURBIDITY_MOTOR_FORWARD, LOW); // Turn off forward pump
@@ -1267,15 +1267,14 @@ void SaveTurbData(String nameOfFile, int howManyReads){ //Used to save turbidity
 
 void forwardPump(){
     for (int i = 0; i < tpumptme; i++ ) {
-      delayUsingMillis(turbPeriod);
+      delay(turbPeriod); //KR - testing if delay() gives good timing behaviour
       resetWDT();
     } // Wait for tPumpTme seconds before making a turbidity measure
 }
 
 void reversePump(){
     for (int i = 0; i < tbflshtm; i++) {
-      
-      delayUsingMillis(turbPeriod);
+      delay(turbPeriod); //KR - testing if delay() gives good timingbehaviour
       resetWDT();
     }
   }
