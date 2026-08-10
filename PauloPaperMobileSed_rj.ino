@@ -55,10 +55,10 @@
 #define TURBIDITY_MOTOR_FORWARD (A0)
 #define TURBIDITY_MOTOR_REVERSE_PIN (A1) //changed from A1 12/04/23
 #define pumpspeed             (3) //D3 D4 D5 D9 are pwm output pins 8bit
-#define TURB_DRY_READ    "TURBDRY.csv"
-#define TURB_WET_READ   "TURBRAW.csv"
-#define DEFAULT_PUMP_TIME 2
-#define DEFAULT_BACKFLUSH 2
+#define TURB_DRY_READ    "TURBDRY.csv" // limited to 8 characters plus extension
+#define TURB_WET_READ   "TURBRAW.csv" // limited to 8 characters plus extension
+#define DEFAULT_PUMP_TIME 2 //forward pump time in seconds before wet read starts, to draw water into the sensor
+#define DEFAULT_BACKFLUSH 2 //reverse pump time in seconds after wet read ends, to backflush the turbidity sensor
 #define DEFAULT_READ_COUNT 10
 #define DEFAULT_MIN_H2O 20
 #define DEFAULT_TURB_READ_PERIOD 1000
@@ -236,8 +236,9 @@ void setup () {
   OneWireTempSetup(); //Must auto detect sensors BEFORE configRead()
   configRead();
   sendLoRaIgnore("Config updated");
-  sendLoRaIgnore("forward pump time = " + String(tpumptme) + " sec"); //ensuring tpumptme is pulled from config.
-  sendLoRaIgnore("reverse pump time = " + String(tbflshtm) + " sec"); //ensuring tpumptme is pulled from config.
+  sendLoRaIgnore("forward pump time tpumptme = " + String(tpumptme) + " sec"); //ensuring tpumptme is pulled from config.
+  sendLoRaIgnore("reverse pump time tbflshtm = " + String(tbflshtm) + " sec"); //ensuring tpumptme is pulled from config.
+  sendLoRaIgnore("period between turbidity measures turbPeriod = " + String(turbPeriod) + "ms"); //ensuring turbPeriod is pulled from config.
 
   while (LoRaRepeater) {
     resetWDT();
@@ -315,13 +316,21 @@ void setup () {
     CSVUnits += "uS,";
   }
 
+  // Dry Turbidity Median
+  CSVHeader += "TURB_DRY,";
+  CSVUnits += "v,";
+
   // Wet Turbidity Median
-  CSVHeader += "TURB,";
+  CSVHeader += "TURB_WET,";
   CSVUnits += "v,";
 
   // Turbidity Housing Temp
   CSVHeader += "HOUSING_TEMP,";
   CSVUnits += "c,";
+
+  // Leak Sensor (ADC2)
+  CSVHeader += "LEAK_SENSOR,";
+  CSVUnits += "v,";
 
   fileNameStr = fileNameGen(logIncrement);
   while (SD.exists((char*)fileNameStr.c_str()) && logIncrement < 122) {
@@ -502,29 +511,32 @@ adc2 = ads.readVoltage(2);
   if (sensor.ALS.measure_2[0] > minh2o) {
     analogWrite(pumpspeed, 255); //max 255
     sendLoRaIgnore("begin dry read");
-    delay(1000);
+    //delay(1000);
     TurbMeasure(TURB_DRY_READ, dryReadTimes);  //Make dry read and wet read configurable
-    turbidity_air_avg = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float));
+    turbidity_air_avg = voltageMedian; // use raw voltage, do not calculate NTU
+    sendLoRaIgnore("median dry read voltage = " + (String(turbidity_air_avg)) + " V");
     sendLoRaIgnore("end of dry read & pump starts sampling");
-    delay(1000);
+    delay(10);
     digitalWrite(TURBIDITY_MOTOR_FORWARD, HIGH);// Run the pump forward for tpumptme seconds
     sendLoRaIgnore("turn on forward pump for " + (String(tpumptme)) + " sec");
     forwardPump();
     sendLoRaIgnore("begin wet read");
     //delay(1000);
     TurbMeasure(TURB_WET_READ, wetReadTimes);
-    turbidity = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float)); //RJ added 18/05/2026
+    turbidity = voltageMedian; // use raw voltage, do not calculate NTU
+    sendLoRaIgnore("median wet read voltage = " + (String(turbidity)) + " V");
+    //turbidity = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float)); //RJ added 18/05/2026
     sendLoRaIgnore("turn off forward pump");
     //delay(1000);
     digitalWrite(TURBIDITY_MOTOR_FORWARD, LOW); // Turn off forward pump
-    delayUsingMillis(1000); // one second delay before running pump in reverse
+    delay(500); // one second delay before running pump in reverse
     sendLoRaIgnore("turn on reverse pump for " + (String(tbflshtm)) + " sec");
     //delay(1000);
     digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, HIGH); // Turn on pump reverse for tbflshtm seconds
     reversePump();
     digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, LOW); // Turn off reverse pump
     sendLoRaIgnore("turn off reverse pump");
-    delay(1000);
+    delay(10);
   } else {
     debugWrite(normTimestamp+": Not enough water, skipping Turbidity measure \n");
     }
@@ -570,6 +582,7 @@ adc2 = ads.readVoltage(2);
   }
   WakeTime = millis();  //For wake period calculation
   setupWDT( WATCHDOG_TIMER_MS ); // initialize and activate WDT with maximum period
+  sendLoRaIgnore("time at end of loop: " + String(millis()) + " ms");
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -684,7 +697,7 @@ void rain_isr() {
 
 void LoRaUpdate() {
   char *pmsg;
-  String LoRaString = "PKT:" + normTimestamp + dataString + adc2;
+  String LoRaString = "PKT:" + dataString;
   pmsg = (char*)LoRaString.c_str();
   rf95.send((uint8_t *)pmsg, strlen(pmsg) + 1);
   rf95.waitPacketSent();    //This takes 189ms
@@ -915,19 +928,16 @@ void buildTimestamps() {
 }
 
 void buildCSVDataString() {
-  //dataString = siteID;   //First "SITE_ID" identifies packet to relevant gateway
-  //dataString += normTimestamp + ",";
-  dataString = normTimestamp + ",";
-  dataString = "," + siteID + ",";   //First "SITE_ID" identifies packet to relevant gateway
-  dataString += NodeID + ",";
-  //dataString += normTimestamp + ",";
-  //dataString += UNIXtimestamp + ",";
+  dataString = siteID + NodeID + ",";   //First "SITE_ID" identifies packet to relevant gateway
+  dataString += normTimestamp + ",";
+  dataString += UNIXtimestamp + ",";
+  //dataString += siteID + ",";   //First "SITE_ID" identifies packet to relevant gateway
+  //dataString += NodeID + ",";
   dataString += String(FIRMWARE_VERSION) + ",";
   dataString += String(tx_count, DEC) + ",";
   dataString += String(lastUpTime) + ",";
   dataString += String(logFileSize) + ",";
   dataString += String(battVoltUpdate()) + ",";
-
   if (sensor.rainGauge.sensorCount > 0) {
     dataString +=  String(rainfall_mm, 2) + ",";
   }
@@ -959,8 +969,9 @@ void buildCSVDataString() {
     }
   }
   dataString += String(turbidity_air_avg, 2) + " turbair average"+ ","; //RJ added
-  dataString += String(turbidity, 2) + " turbwet average"+ ","; //RJ removed
-  dataString += String(tempHousingMedian, 2) + " tempHousingMedian"+ ","; //RJ removed
+  dataString += String(turbidity, 2) + " turbwet average"+ ",";
+  dataString += String(tempHousingMedian, 2) + " tempHousingMedian"+ ","; 
+  dataString += String(adc2) + " adc2"+ ",";
 }
 
 void configRead() {
@@ -1240,12 +1251,13 @@ void TurbMeasure(String nameOfFile, int howManyReads) {
     voltageMeasurementArray[i] = ads.readVoltage(1);
     tempHousingMeasurementArray[i] = sensor.temp.measure[0];
     tempWaterMeasurementArray[i] = sensor.temp.measure[1]; 
-    delayUsingMillis(1000);
+    delay(turbPeriod); //using "delay" for simplicity
   }
   voltageMedian = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float));
-  turbidity = voltageMedian; // use raw voltage, do not calculate NTU
   tempHousingMedian = QuickMedian<float>::GetMedian(tempHousingMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float));
+  sendLoRaIgnore("saving turb data, starting at " + String(millis()) + " ms");
   SaveTurbData(nameOfFile, howManyReads);
+  sendLoRaIgnore("saving turb data, finished at " + String(millis()) + " ms");
 }
 
 void SaveTurbData(String nameOfFile, int howManyReads){ //Used to save turbidity raw voltage
@@ -1255,26 +1267,42 @@ void SaveTurbData(String nameOfFile, int howManyReads){ //Used to save turbidity
   }
   logFile = SD.open(nameOfFile, FILE_WRITE);
   digitalWrite(LED_BUILTIN, HIGH);
-  if (logFile) {
-      for (int i = 0; i < howManyReads; i++){
-        csvObject = csvObject + siteID + NodeID + "," + normTimestamp + "," + UNIXtimestamp + "," + String(tx_count, DEC) + "," + String(voltageMeasurementArray[i],4) + "," + String(tempHousingMeasurementArray[i],2) + "," + String(tempWaterMeasurementArray[i],2);
-        logFile.println(csvObject);
-        csvObject = "";
-        }
-    logFile.close();
+  if (!logFile) {
+    sendLoRaIgnore("Initial open failed for " + nameOfFile + ", retrying SD init");
+    debugWrite("Initial open failed for " + nameOfFile + ", retrying SD init");
+    if (SD.begin(SD_SPI_CS)) {
+      logFile = SD.open(nameOfFile, FILE_WRITE);
+    }
   }
+  if (!logFile && SD.exists(nameOfFile)) {
+    sendLoRaIgnore("Open failed for existing " + nameOfFile + ", removing and retrying");
+    debugWrite("Open failed for existing " + nameOfFile + ", removing and retrying");
+    SD.remove(nameOfFile);
+    logFile = SD.open(nameOfFile, FILE_WRITE);
+  }
+  if (!logFile) {
+    sendLoRaIgnore("Failed to open " + nameOfFile + " for turbidity logging after retry");
+    debugWrite("Failed to open " + nameOfFile + " for turbidity logging after retry");
+    return;
+  }
+  for (int i = 0; i < howManyReads; i++){
+    csvObject = csvObject + siteID + NodeID + "," + normTimestamp + "," + UNIXtimestamp + "," + String(tx_count, DEC) + "," + String(voltageMeasurementArray[i],4) + "," + String(tempHousingMeasurementArray[i],2) + "," + String(tempWaterMeasurementArray[i],2);
+    logFile.println(csvObject);
+    csvObject = "";
+  }
+  logFile.close();
 }
 
 void forwardPump(){
     for (int i = 0; i < tpumptme; i++ ) {
-      delay(turbPeriod); //KR - testing if delay() gives good timing behaviour
+      delay(1000); //KR - testing if delay(1000) gives good timing behaviour of tpmuptme seconds
       resetWDT();
     } // Wait for tPumpTme seconds before making a turbidity measure
 }
 
 void reversePump(){
     for (int i = 0; i < tbflshtm; i++) {
-      delay(turbPeriod); //KR - testing if delay() gives good timingbehaviour
+      delay(1000); //KR - testing if delay(1000) gives good timing behaviour
       resetWDT();
     }
   }
