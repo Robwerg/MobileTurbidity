@@ -5,16 +5,15 @@
   Kai James kaicjames@outlook.com code for Melt Sensors
 */
 #include <SDI12.h>
-#include "RTClib.h"
+#include <RTClib.h>
 #include <Wire.h>
 #include <SD.h>
 #include <DFRobot_ADS1115.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include "RTCZero.h"
-#include "RH_RF95.h"
-#include "QuickMedianLib.h"
-// #include <FlashAsEEPROM.h> Not using this right now
+#include <RTCZero.h>
+#include <RH_RF95.h>
+#include <QuickMedianLib.h>
 
 
 #define TEST_LOOP             (false)     //Run test loop instead of actual loop
@@ -55,15 +54,15 @@
 #define LORA_BANDWIDTH        (125000)  //Increase to 250000 or 500000 for increased speed, less range. Linear change.
 
 #define TURBIDITY_MOTOR_FORWARD (A0)
-#define TURBIDITY_MOTOR_REVERSE_PIN (A1) //changed from A1 12/04/23
+#define TURBIDITY_MOTOR_REVERSE_PIN (A1)
 #define pumpspeed             (3) //D3 D4 D5 D9 are pwm output pins 8bit
 #define TURB_DRY_READ    "TURBDRY.csv" // limited to 8 characters plus extension
 #define TURB_WET_READ   "TURBRAW.csv" // limited to 8 characters plus extension
-#define DEFAULT_PUMP_TIME 2 //forward pump time in seconds before wet read starts, to draw water into the sensor
-#define DEFAULT_BACKFLUSH 2 //reverse pump time in seconds after wet read ends, to backflush the turbidity sensor
-#define DEFAULT_READ_COUNT 10
-#define DEFAULT_MIN_H2O 20
-#define DEFAULT_TURB_READ_PERIOD 1000
+#define DEFAULT_PUMP_TIME 10 //forward pump time in seconds before wet read starts, to draw water into the sensor
+#define DEFAULT_BACKFLUSH 10 //reverse pump time in seconds after wet read ends, to backflush the turbidity sensor
+#define DEFAULT_READ_COUNT 10 //number of turbidity readings to take for median calculation
+#define DEFAULT_MIN_H2O 20 // minimum water level in mm to allow turbidity wet read to occur
+#define DEFAULT_TURB_READ_PERIOD 100 //period in ms between turbidity readings for median calculation
 
 //CONFIG.txt variables
 String NodeID;
@@ -71,8 +70,6 @@ double ALSslope = 1;
 double ALSoffset = 0;
 int LoRaPollOffset = 23;
 int pollPerLoRa = 6;
-int LoRaRepeater = 0;
-String Nodes_to_repeat[MAX_REPEATED_NODES] = {"NULL"};
 String project = "TST";
 String siteID = "AA";
 float raingaugeTip_mm = 0.2;
@@ -85,7 +82,6 @@ int dryReadTimes = DEFAULT_READ_COUNT;
 int wetReadTimes = DEFAULT_READ_COUNT;
 int minh2o = DEFAULT_MIN_H2O;
 int turbPeriod = DEFAULT_TURB_READ_PERIOD;
-// int lastSDSize = 1;
 
 
 const char *monthName[12] = {
@@ -120,12 +116,6 @@ typedef struct {
   value_t USS;
 } sensor_t;
 sensor_t sensor;
-
-typedef struct {
-  String packet;
-  int RSSI;
-} LoRaReceive_t;
-LoRaReceive_t LoRaReceive;
 
 //Initialise libraries
 RH_RF95 rf95(12, 6);
@@ -178,8 +168,6 @@ float turbidity_air_avg;
 
 int adc2 = 0;
 
-uint32_t time_now;
-
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////    SETUP           ///////////////////////////////////////////////////////////
@@ -195,11 +183,8 @@ void setup () {
 
   pinMode(pumpspeed, OUTPUT); // set pump speed pin to output
 
-
-
     //SD card
   if (!SD.begin(SD_SPI_CS)) {
-    //SerialUSB.println("SD initialization failed!");
     crashNflash(1);  //10*10ms high period
   }
 
@@ -241,30 +226,6 @@ void setup () {
   sendLoRaIgnore("forward pump time tpumptme = " + String(tpumptme) + " sec"); //ensuring tpumptme is pulled from config.
   sendLoRaIgnore("reverse pump time tbflshtm = " + String(tbflshtm) + " sec"); //ensuring tpumptme is pulled from config.
   sendLoRaIgnore("period between turbidity measures turbPeriod = " + String(turbPeriod) + "ms"); //ensuring turbPeriod is pulled from config.
-
-  while (LoRaRepeater) {
-    resetWDT();
-    LoRaListen(999);   //Enter 999 for no timeout
-    String tmp = LoRaReceive.packet;
-    int i = 0;
-    char * pch = strtok((char*)tmp.c_str(), ",");
-    bool repeatPacket = false;
-    while (pch != NULL) {
-      for (int j = 0 ; j < MAX_REPEATED_NODES ; j++) {
-        if (String(pch) == Nodes_to_repeat[j]) {
-          repeatPacket = true;
-        }
-      }
-      pch = strtok (NULL, ",");
-      i++;
-    }
-    if (repeatPacket == true) {
-      delay(500); //Wait for existing signal to clear
-      // sendLoRaRaw("Repeat packet:");
-      sendLoRaRaw(LoRaReceive.packet);
-      // LoRaReceive.RSSI;
-    }
-  }
 
   Wire.begin(); //Might not need this
   pinMode(LED, OUTPUT);
@@ -840,7 +801,6 @@ void logDataToSD() {
     logFile.println(CSVHeader);
     logFile.close();
   }
-  // lastSDSize = logFileSize;
 }
 
 void crashNflash(int identifier) {
@@ -1001,17 +961,6 @@ void configRead() {
         LoRaEnabled = value.toInt();
       } else if (key == "SD_EN") {
         SDEnabled = value.toInt();
-      } else if (key == "LoRaRepeater") {
-        LoRaRepeater = value.toInt();
-      } else if (key == "Nodes_to_repeat") {
-        int i = 0;
-        pch = strtok((char*)value.c_str(), "{},");
-        while (pch != NULL) {
-          Nodes_to_repeat[i] = pch;
-          sendLoRaIgnore("Repeating: " + Nodes_to_repeat[i]);
-          pch = strtok (NULL, ",{}");
-          i++;
-        }
       } else if (key == "ALS_Count") {
         sensor.ALS.sensorCount = value.toInt();
       } else if (key == "ALS_Period") {
@@ -1163,27 +1112,6 @@ void convertALS() {
     }
     sensor.ALS.measure_2[i] = sensor.ALS.measure[i] * Slope + Offset;
   }
-}
-
-bool LoRaListen(int timeout_S) {
-  // Example use
-  // if(LoRaListen(10)){;   //Enter 999 for no timeout
-  // SerialUSB.println(LoRaReceive.RSSI);
-  // SerialUSB.println(LoRaReceive.packet);}
-
-  uint8_t len;
-  int startTime = millis();
-  while ((millis() - startTime) < (timeout_S * 1000) || timeout_S == 999) {
-    while (rf95.available()) {
-      len = sizeof(rfbuf);
-      if (rf95.recv(rfbuf, &len)) {
-        LoRaReceive.packet = (char*)rfbuf;
-        LoRaReceive.RSSI = rf95.lastRssi();
-      }
-      return true;
-    }
-  }
-  return false;
 }
 
 void bubbleSort(int a[], int arrayIndex[], int size) {
