@@ -236,10 +236,10 @@ void setup () {
   pinMode(USS_ECHO, INPUT);
   digitalWrite(USS_TRIG, LOW);
 
-  //OTT probe
-  if (sensor.OTT.sensorCount > 0) {
-    mySDI12.begin();
-  }
+  // //OTT probe
+  // if (sensor.OTT.sensorCount > 0) {
+  //   mySDI12.begin();
+  // }
   ads.setAddr_ADS1115(ADS1115_IIC_ADDRESS0);   // 0x48
   ads.setGain(eGAIN_TWOTHIRDS);   // 2/3x gain
   ads.setMode(eMODE_SINGLE);       // single-shot mode
@@ -249,9 +249,6 @@ void setup () {
   
   //Build CSV Header - optional sensors
   CSVHeader = "DATE_TIME,SITE_ID,NODE_ID,FW_VER,COUNT,UPTIME,FILE_SIZE,BATT_V,";
-  if (sensor.rainGauge.sensorCount > 0) {
-    CSVHeader += "RAIN,";
-  }
   for (int j = 0; j < sensor.temp.sensorCount ; j++) {
     CSVHeader +=  "Temp_" + String(j) + ",";
   }
@@ -263,9 +260,6 @@ void setup () {
   }
   for (int j = 0; j < sensor.ALS.sensorCount ; j++) {
     CSVHeader += + "EstLevel_" + String(j) + ",";
-  }
-  for (int j = 0; j < sensor.OTT.sensorCount ; j++) {
-    CSVHeader += + "OTT_" + String(j) + ",";
   }
   if (sensor.USS.sensorCount > 0) {
     CSVHeader += "USS,";
@@ -367,17 +361,6 @@ void setup () {
   buildTimestamps();
   debugWrite(String("Node ") + NodeID + " successfuly started. Start time: "+normTimestamp+"\n");
 
-  
-  //Rain gauge. Add last to ensure the interrupt doesn't interfere with initial time sync
-  if (sensor.rainGauge.sensorCount > 0) {
-    pinMode(RAIN_GAUGE_INT, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(RAIN_GAUGE_INT), rain_isr, FALLING);
-    // Configure EIC to use GCLK1 which uses XOSC32K. Allows rise/fall interupt modes to work.
-    SYSCTRL->XOSC32K.bit.RUNSTDBY = 1;
-    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID(GCM_EIC) |
-                        GCLK_CLKCTRL_GEN_GCLK1 |
-                        GCLK_CLKCTRL_CLKEN;
-  }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -402,25 +385,6 @@ void loop () {
   DateTime now;
   buildTimestamps();
 
-  if (sensor.rainGauge.sensorCount > 0) {
-    rainfall_mm = tip_count * raingaugeTip_mm;
-    if (RAIN_CUMULATIVE) {
-      now = rtc.now();
-      if (now.hour() == 0) {
-        if (dailyReset) {
-          tip_count = 0;
-          dailyReset = false;
-        }
-      }
-      else if (!dailyReset) {
-        dailyReset = true;
-      }
-    }
-    else {
-      tip_count = 0;
-    }
-  }
-
   if (sensor.temp.sensorCount > 0) {
     if (sensor.temp.cycleCount == 1) { //Only test if we have woken the sensor and reset counter
       if (!tempUpdate()) {  //This and subsequent blank if statements are used in problem solving. Can defs remove them
@@ -441,12 +405,6 @@ void loop () {
     }
   }
 
-  if (sensor.OTT.sensorCount > 0) {
-    if (sensor.OTT.cycleCount == 1) { //Only test if we have woken the sensor and reset counter
-      if (!OTTUpdate()) {  //This and subsequent blank if statements are used in problem solving. Can defs remove them
-      }
-    }
-  }
   if (sensor.USS.sensorCount > 0) {
     if (sensor.USS.cycleCount == 1) { //Only test if we have woken the sensor and reset counter
       if (!USSUpdate()) {  //This and subsequent blank if statements are used in problem solving. Can defs remove them
@@ -455,8 +413,7 @@ void loop () {
   }
 
 
-
-adc2 = ads.readVoltage(2); 
+  adc2 = ads.readVoltage(2); 
 
   if (sensor.ALS.measure_2[0] > minh2o) {
     analogWrite(pumpspeed, 255); //max 255
@@ -545,21 +502,17 @@ String fileNameGen(int increment) {
 }
 
 void updatePollFreq() {
-  pollPeriod = min(min(min(min(min(sensor.temp.pollPeriod, sensor.RTCTemp.pollPeriod), sensor.ALS.pollPeriod), sensor.OTT.pollPeriod), sensor.USS.pollPeriod), sensor.rainGauge.pollPeriod);
+  pollPeriod = min(min(min(sensor.temp.pollPeriod, sensor.RTCTemp.pollPeriod), sensor.ALS.pollPeriod), sensor.USS.pollPeriod);
   //Calculate cycles per poll
-  sensor.rainGauge.cyclesPerPoll = sensor.rainGauge.pollPeriod / pollPeriod;
   sensor.temp.cyclesPerPoll = sensor.temp.pollPeriod / pollPeriod;
   sensor.RTCTemp.cyclesPerPoll = sensor.RTCTemp.pollPeriod / pollPeriod;
   sensor.ALS.cyclesPerPoll = sensor.ALS.pollPeriod / pollPeriod;
-  sensor.OTT.cyclesPerPoll = sensor.OTT.pollPeriod / pollPeriod;
   sensor.USS.cyclesPerPoll = sensor.USS.pollPeriod / pollPeriod;
   //Init counter
-  sensor.rainGauge.cycleCount = sensor.rainGauge.cyclesPerPoll;
   sensor.temp.cycleCount = sensor.temp.cyclesPerPoll;
   sensor.RTCTemp.cycleCount = sensor.RTCTemp.cyclesPerPoll;
   sensor.ALS.cycleCount = sensor.ALS.cyclesPerPoll;
   sensor.USS.cycleCount = sensor.USS.cyclesPerPoll;
-  sensor.OTT.cycleCount = sensor.OTT.cyclesPerPoll;
 }
 
 void sleep() {
@@ -711,55 +664,6 @@ bool ALSUpdate() {
   return true;
 }
 
-bool OTTUpdate() {
-  String myComAdress = "?!";
-  String address;
-  String myComId = "0I!";
-  String myComSend = "0D0!";
-  String myComMeasure = "0M!";
-
-  mySDI12.sendCommand(myComMeasure);
-  while (mySDI12.available()) {
-    mySDI12.read();
-  }
-  delay(1000);
-  mySDI12.clearBuffer();
-  delay(500);
-  mySDI12.sendCommand(myComSend);
-  delay(50);
-  String rawdata = readSDI12();
-  mySDI12.clearBuffer();
-  delay(50);
-  //Decoding string sent from probe
-  int p = 0;
-  int pos[] = {0, 0};
-  for (int z = 0 ; z < rawdata.length() ; z++)  {
-    char u = rawdata.charAt(z);
-    if (u == '+' || u == '-') {
-      pos[p] = z ;
-      p++;
-    }
-    delay(50);
-  }
-  String level = rawdata.substring(pos[0], pos[1]);
-  String temp = rawdata.substring(pos[1], rawdata.length());
-  sensor.OTT.measure[0] = level.toDouble() - OTT_OFFSET;
-  sensor.OTT.measure[1] = temp.toDouble();
-  return true;
-}
-
-String readSDI12() {
-  String sdiResponse = "";
-  delay(30);
-  while (mySDI12.available()) {  // write the response to the screen
-    char c = mySDI12.read();
-    if ((c != '\n') && (c != '\r')) {
-      sdiResponse += c;
-    delay(5);
-    }
-  }
-  return sdiResponse;
-}
 
 bool RTCTempUpdate() {
   sensor.RTCTemp.measure[0] = rtc.getTemperature();
@@ -834,20 +738,7 @@ void buildTimestamps() {
   if ((tarSec >= WRAP_AROUND_S_UPPER) && (now.second() <= 30)) { //We will favor being forward in time, so this won't happen often
     now = rtc.now();
     debug("Late wake, RTC time in next minute");
-    // logFile = SD.open((char*)fileNameStr.c_str(), FILE_WRITE);
-    // logFile.println("Late wake, RTC time in next minute");
-    // logFile.close();
   }
-  // if (tarSec < 10) {
-  //   second = "0" + String(tarSec);
-  // } else {
-  //   second = String(tarSec);
-  // }
-  // if (now.second() < 10) {
-  //   second = "0" + String(now.second(),DEC);
-  // } else {
-  //   second = String(now.second(),DEC);
-  // }
   if (tarSec < 10) {
     second = "0" + String(tarSec, DEC);
   } else {
@@ -881,18 +772,14 @@ void buildCSVDataString() {
   dataString = normTimestamp + ","; // formatted timestamp - first in string
   dataString += siteID + ",";   //"SITE_ID" identifies packet to relevant gateway
   dataString += NodeID + ",";   
-//  dataString += UNIXtimestamp + ","; // unformatted UNIX time - not in standard Node-Red input, commented out
   dataString += String(FIRMWARE_VERSION) + ",";
   dataString += String(tx_count, DEC) + ",";
   dataString += String(lastUpTime) + ",";
   dataString += String(logFileSize) + ",";
   dataString += String(battVoltUpdate()) + ",";
-  if (sensor.rainGauge.sensorCount > 0) {
-    dataString +=  String(rainfall_mm, 2) + ",";
-  }
+
   if (sensor.temp.sensorCount > 0) {
     for (int i = 0; i < sensor.temp.sensorCount; i++) {
-      // dataString += String(234.342, 2) + ",";
       dataString += String(sensor.temp.measure[i], 2) + ",";
     }
   }
@@ -905,11 +792,6 @@ void buildCSVDataString() {
     for (int i = 0; i < sensor.ALS.sensorCount; i++) {
       dataString += String(sensor.ALS.measure[i], 2) + ",";
       dataString += String(sensor.ALS.measure_2[i], 2) + ",";
-    }
-  }
-  if (sensor.OTT.sensorCount > 0) {
-    for (int i = 0; i < sensor.OTT.sensorCount; i++) {
-      dataString += String(sensor.OTT.measure[i], 2) + ",";
     }
   }
   if (sensor.USS.sensorCount > 0) {
@@ -978,18 +860,6 @@ void configRead() {
       } else if (key == "USS_Period") {
         if (sensor.USS.sensorCount != 0) {
           sensor.USS.pollPeriod = value.toInt();
-        }
-      } else if (key == "OTT_Count") {
-        sensor.OTT.sensorCount = value.toInt();
-      } else if (key == "OTT_Period") {
-        if (sensor.OTT.sensorCount != 0) {
-          sensor.OTT.pollPeriod = value.toInt();
-        }
-      } else if (key == "Raingauge_Count") {
-        sensor.rainGauge.sensorCount = value.toInt();
-      } else if (key == "Raingauge_Period") {
-        if (sensor.rainGauge.sensorCount != 0) {
-          sensor.rainGauge.pollPeriod = value.toInt();
         }
       } else if (key == "RTC_Temp_Count") {
         sensor.RTCTemp.sensorCount = value.toInt();
