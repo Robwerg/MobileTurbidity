@@ -1,4 +1,6 @@
 /*
+  Firmware for Turbidibuoy floating mobile pumped turbidity and water level sensor system
+  Adapted from Paulo Silva mobile sediment sensor code 
   Forked by Axel Baylon axelbaylon@hotmail.com based off
   Kai James kaicjames@outlook.com code for Melt Sensors
 */
@@ -284,53 +286,41 @@ void setup () {
   ads.setOSMode(eOSMODE_SINGLE);   // Set to start a single-conversion
   ads.init();
   
-  //ALS Sensor
-  CSVHeader = "SITE_NAME,DATE_TIME,TIMESTAMP,FW_VER,COUNT,UPTIME,FILE_SIZE,BATT_V,";
-  String CSVUnits = "SN,DT,TS,FW,INT,mS,BYTES,V,";
+  //Build CSV Header - optional sensors
+  CSVHeader = "DATE_TIME,SITE_ID,NODE_ID,FW_VER,COUNT,UPTIME,FILE_SIZE,BATT_V,";
   if (sensor.rainGauge.sensorCount > 0) {
     CSVHeader += "RAIN,";
-    CSVUnits += "mm,";
   }
   for (int j = 0; j < sensor.temp.sensorCount ; j++) {
     CSVHeader +=  "Temp_" + String(j) + ",";
-    CSVUnits += "Deg C,";
   }
   if (sensor.RTCTemp.sensorCount > 0) {
     CSVHeader += "RTCTemp,";
-    CSVUnits += "Deg C,";
   }
   for (int j = 0; j < sensor.ALS.sensorCount ; j++) {
     CSVHeader += + "RawALS_" + String(j) + ",";
-    CSVUnits += "mm,";
   }
   for (int j = 0; j < sensor.ALS.sensorCount ; j++) {
     CSVHeader += + "EstLevel_" + String(j) + ",";
-    CSVUnits += "mm,";
   }
   for (int j = 0; j < sensor.OTT.sensorCount ; j++) {
     CSVHeader += + "OTT_" + String(j) + ",";
-    CSVUnits += "mm,";
   }
   if (sensor.USS.sensorCount > 0) {
     CSVHeader += "USS,";
-    CSVUnits += "uS,";
   }
 
   // Dry Turbidity Median
   CSVHeader += "TURB_DRY,";
-  CSVUnits += "v,";
 
   // Wet Turbidity Median
   CSVHeader += "TURB_WET,";
-  CSVUnits += "v,";
 
   // Turbidity Housing Temp
   CSVHeader += "HOUSING_TEMP,";
-  CSVUnits += "c,";
 
   // Leak Sensor (ADC2)
   CSVHeader += "LEAK_SENSOR,";
-  CSVUnits += "v,";
 
   fileNameStr = fileNameGen(logIncrement);
   while (SD.exists((char*)fileNameStr.c_str()) && logIncrement < 122) {
@@ -448,7 +438,6 @@ void loop () {
 
   tx_count++;
 
-
   DateTime now;
   buildTimestamps();
 
@@ -558,7 +547,7 @@ adc2 = ads.readVoltage(2);
   }
 
   rf95.sleep();
-  delayUsingMillis(20);    //Delay 20ms to ensure the chips have gone to sleep before powering off the board
+  delay(20);    //Delay 20ms to ensure the chips have gone to sleep before powering off the board
   disableWatchdog(); // disable watchdog
   rain_interrupt = false;
   bool first_loop = true;
@@ -625,7 +614,7 @@ void sleep() {
       SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk;
     }
     else if (!SLEEP_ENABLED) {
-      delayUsingMillis(sleep_remaining_s * 1000);
+      delay(sleep_remaining_s * 1000);
     }
     sleep_remaining_s =  - (internalrtc.getEpoch() - sleep_now_time); // Restarts clock in case of wake due to rain interupt
   }
@@ -745,7 +734,7 @@ bool tempUpdate() { //Make sure battery power is connected.
 bool ALSUpdate() {
 
   int wait = ALS_POWER_WAIT - (millis() - SensWakeTime);
-  delayUsingMillis(wait);
+  delay(wait);
 
   for (int i = 0; i < sensor.ALS.sensorCount ; i++) {
     sensor.ALS.measure[i] = 0;
@@ -753,7 +742,7 @@ bool ALSUpdate() {
 
       sensor.ALS.measure[i] += ads.readVoltage(0);    // Changed from sensor.ALS.measure[i] += ads.readVoltage(k+1); changed 12/04/23
 
-      delayUsingMillis(ALS_AVE_DELAY);
+      delay(ALS_AVE_DELAY);
     }
     sensor.ALS.measure[i] = sensor.ALS.measure[i] / ALS_AVE_COUNT; //true makes a call, only do it once per poll session
   }
@@ -772,14 +761,14 @@ bool OTTUpdate() {
   while (mySDI12.available()) {
     mySDI12.read();
   }
-  delayUsingMillis(1000);
+  delay(1000);
   mySDI12.clearBuffer();
-  delayUsingMillis(500);
+  delay(500);
   mySDI12.sendCommand(myComSend);
-  delayUsingMillis(50);
+  delay(50);
   String rawdata = readSDI12();
   mySDI12.clearBuffer();
-  delayUsingMillis(50);
+  delay(50);
   //Decoding string sent from probe
   int p = 0;
   int pos[] = {0, 0};
@@ -789,7 +778,7 @@ bool OTTUpdate() {
       pos[p] = z ;
       p++;
     }
-    delayUsingMillis(50);
+    delay(50);
   }
   String level = rawdata.substring(pos[0], pos[1]);
   String temp = rawdata.substring(pos[1], rawdata.length());
@@ -800,12 +789,12 @@ bool OTTUpdate() {
 
 String readSDI12() {
   String sdiResponse = "";
-  delayUsingMillis(30);
+  delay(30);
   while (mySDI12.available()) {  // write the response to the screen
     char c = mySDI12.read();
     if ((c != '\n') && (c != '\r')) {
       sdiResponse += c;
-    delayUsingMillis(5);
+    delay(5);
     }
   }
   return sdiResponse;
@@ -818,15 +807,15 @@ bool RTCTempUpdate() {
 
 bool USSUpdate() {
   digitalWrite(FET_POWER, LOW);
-  delayUsingMillis(USS_INIT_TIME);
+  delay(USS_INIT_TIME);
   digitalWrite(USS_TRIG, LOW);
-  delayUsingMillis(1);
+  delay(1);
   digitalWrite(USS_TRIG, HIGH);
-  delayUsingMillis(1);
+  delay(1);
   digitalWrite(USS_TRIG, LOW);
   double duration = pulseIn(USS_ECHO, HIGH);
   float dist = duration / 2 * 0.000343;
-  delayUsingMillis(50);
+  delay(50);
   sensor.USS.measure[0] = dist;   //Should return duration and have temp compensation
   digitalWrite(FET_POWER, LOW);
   return true;
@@ -836,6 +825,7 @@ void logDataToSD() {
   logFile = SD.open((char*)fileNameStr.c_str(), FILE_WRITE);
   // SerialUSB.println(SD.exists((char*)fileNameStr.c_str()));
   logFile.println(dataString);
+  sendLoRaIgnore("Data logged to SD. File name = " + fileNameStr + ", size = " + String(logFile.size()) + " bytes");
   // logFile.print(UNIXtimestamp);
   logFileSize = logFile.size();
   logFile.close();
@@ -874,7 +864,7 @@ void buildTimestamps() {
 
   DateTime now = rtc.now();
   if ((tarSec < WRAP_AROUND_S_LOWER) && (now.second() >= 30)) { //We will favor being forward in time, so this won't happen often
-    delayUsingMillis((60 - int(now.second())) * 1000); //Wait until next second
+    delay((60 - int(now.second())) * 1000); //Wait until next second
     now = rtc.now();
     debug("Early wake, wasting power while waiting");//Wrap around occurring. Add 1 sec buffer to sleep time
     // logFile = SD.open((char*)fileNameStr.c_str(), FILE_WRITE);
@@ -928,11 +918,10 @@ void buildTimestamps() {
 }
 
 void buildCSVDataString() {
-  dataString = siteID + NodeID + ",";   //First "SITE_ID" identifies packet to relevant gateway
-  dataString += normTimestamp + ",";
-  dataString += UNIXtimestamp + ",";
-  //dataString += siteID + ",";   //First "SITE_ID" identifies packet to relevant gateway
-  //dataString += NodeID + ",";
+  dataString = normTimestamp + ","; // formatted timestamp - first in string
+  dataString += siteID + ",";   //"SITE_ID" identifies packet to relevant gateway
+  dataString += NodeID + ",";   
+//  dataString += UNIXtimestamp + ","; // unformatted UNIX time - not in standard Node-Red input, commented out
   dataString += String(FIRMWARE_VERSION) + ",";
   dataString += String(tx_count, DEC) + ",";
   dataString += String(lastUpTime) + ",";
@@ -968,10 +957,10 @@ void buildCSVDataString() {
       dataString += String(sensor.USS.measure[i], 2) + ",";
     }
   }
-  dataString += String(turbidity_air_avg, 2) + " turbair average"+ ","; //RJ added
-  dataString += String(turbidity, 2) + " turbwet average"+ ",";
-  dataString += String(tempHousingMedian, 2) + " tempHousingMedian"+ ","; 
-  dataString += String(adc2) + " adc2"+ ",";
+  dataString += String(turbidity_air_avg, 2) + ","; //RJ added
+  dataString += String(turbidity, 2) + ",";
+  dataString += String(tempHousingMedian, 2) + ","; 
+  dataString += String(adc2) + ",";
 }
 
 void configRead() {
@@ -1295,22 +1284,23 @@ void SaveTurbData(String nameOfFile, int howManyReads){ //Used to save turbidity
 
 void forwardPump(){
     for (int i = 0; i < tpumptme; i++ ) {
-      delay(1000); //KR - testing if delay(1000) gives good timing behaviour of tpmuptme seconds
+      delayUsingMillis(1000); //KR - testing if delayUsingMillis(1000) gives good timing behaviour of tpumptme seconds
       resetWDT();
     } // Wait for tPumpTme seconds before making a turbidity measure
 }
 
 void reversePump(){
     for (int i = 0; i < tbflshtm; i++) {
-      delay(1000); //KR - testing if delay(1000) gives good timing behaviour
+      delayUsingMillis(1000); //KR - testing if delayUsingMillis(1000) gives good timing behaviour
       resetWDT();
     }
   }
 
-void delayUsingMillis(int period){
-    time_now = millis();
-    while (time_now + period > millis()) {
-      // Wait approx period
+void delayUsingMillis(unsigned long period) {
+    unsigned long start = millis();
+    while (millis() - start < period) {
+      resetWDT();
+      yield();
     }
 }
 
