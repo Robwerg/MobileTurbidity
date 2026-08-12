@@ -15,8 +15,6 @@
 #include <RH_RF95.h>
 #include <QuickMedianLib.h>
 
-#include "MobileTurbidityHelperFunctions.h"
-
 
 #define TEST_LOOP             (false)     //Run test loop instead of actual loop
 #define SLEEP_ENABLED         (true)    //Disable to keep serial coms alive for testing
@@ -210,7 +208,7 @@ void setup () {
 
   if (rf95.init() == false) {
     while (1) {
-      delay(50);
+      delayUsingMillis(50);
       if (rf95.init()) {
         break;
       }
@@ -420,32 +418,27 @@ void loop () {
   if (sensor.ALS.measure_2[0] > minh2o) {
     analogWrite(pumpspeed, 255); //max 255
     sendLoRaIgnore("begin dry read");
-    //delay(1000);
     TurbMeasure(TURB_DRY_READ, dryReadTimes);  //Make dry read and wet read configurable
     turbidity_air_avg = voltageMedian; // use raw voltage, do not calculate NTU
     sendLoRaIgnore("median dry read voltage = " + (String(turbidity_air_avg)) + " V");
     sendLoRaIgnore("end of dry read & pump starts sampling");
-    delay(10);
+    delayUsingMillis(10);
     digitalWrite(TURBIDITY_MOTOR_FORWARD, HIGH);// Run the pump forward for tpumptme seconds
     sendLoRaIgnore("turn on forward pump for " + (String(tpumptme)) + " sec");
     forwardPump();
     sendLoRaIgnore("begin wet read");
-    //delay(1000);
     TurbMeasure(TURB_WET_READ, wetReadTimes);
     turbidity = voltageMedian; // use raw voltage, do not calculate NTU
     sendLoRaIgnore("median wet read voltage = " + (String(turbidity)) + " V");
-    //turbidity = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float)); //RJ added 18/05/2026
     sendLoRaIgnore("turn off forward pump");
-    //delay(1000);
     digitalWrite(TURBIDITY_MOTOR_FORWARD, LOW); // Turn off forward pump
-    delay(500); // one second delay before running pump in reverse
+    delayUsingMillis(500); // delay before running pump in reverse
     sendLoRaIgnore("turn on reverse pump for " + (String(tbflshtm)) + " sec");
-    //delay(1000);
     digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, HIGH); // Turn on pump reverse for tbflshtm seconds
     reversePump();
     digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, LOW); // Turn off reverse pump
     sendLoRaIgnore("turn off reverse pump");
-    delay(10);
+    delayUsingMillis(10);
   } else {
     debugWrite(normTimestamp+": Not enough water, skipping Turbidity measure \n");
     }
@@ -467,7 +460,7 @@ void loop () {
   }
 
   rf95.sleep();
-  delay(20);    //Delay 20ms to ensure the chips have gone to sleep before powering off the board
+  delayUsingMillis(20);    //Delay 20ms to ensure the chips have gone to sleep before powering off the board
   disableWatchdog(); // disable watchdog
   rain_interrupt = false;
   bool first_loop = true;
@@ -494,3 +487,623 @@ void loop () {
   sendLoRaIgnore("time at end of loop: " + String(millis()) + " ms");
 }
 
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////    FUNCTIONS         ///////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+String fileNameGen(int increment) {
+  String fileName = String(siteID) + String(NodeID) + String(char(increment)) + ".csv";
+  return fileName;
+}
+
+void updatePollFreq() {
+  pollPeriod = min(min(min(sensor.temp.pollPeriod, sensor.RTCTemp.pollPeriod), sensor.ALS.pollPeriod), sensor.USS.pollPeriod);
+  //Calculate cycles per poll
+  sensor.temp.cyclesPerPoll = sensor.temp.pollPeriod / pollPeriod;
+  sensor.RTCTemp.cyclesPerPoll = sensor.RTCTemp.pollPeriod / pollPeriod;
+  sensor.ALS.cyclesPerPoll = sensor.ALS.pollPeriod / pollPeriod;
+  sensor.USS.cyclesPerPoll = sensor.USS.pollPeriod / pollPeriod;
+  //Init counter
+  sensor.temp.cycleCount = sensor.temp.cyclesPerPoll;
+  sensor.RTCTemp.cycleCount = sensor.RTCTemp.cyclesPerPoll;
+  sensor.ALS.cycleCount = sensor.ALS.cyclesPerPoll;
+  sensor.USS.cycleCount = sensor.USS.cyclesPerPoll;
+}
+
+void sleep() {
+  sleep_now_time = internalrtc.getEpoch();
+  if (sleep_remaining_s > 0) {
+    if (SLEEP_ENABLED) {
+      internalrtc.setAlarmEpoch(sleep_now_time + (sleep_remaining_s - 1));
+      internalrtc.enableAlarm(internalrtc.MATCH_HHMMSS);
+      SysTick->CTRL &= ~SysTick_CTRL_TICKINT_Msk;
+      SCB->SCR |= SCB_SCR_SLEEPDEEP_Msk;
+      __DSB();
+      __WFI();
+      SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk;
+    }
+    else if (!SLEEP_ENABLED) {
+      delayUsingMillis(sleep_remaining_s * 1000);
+    }
+    sleep_remaining_s =  - (internalrtc.getEpoch() - sleep_now_time); // Restarts clock in case of wake due to rain interupt
+  }
+}
+
+uint16_t getChipId() {
+  volatile uint32_t *ptr = (volatile uint32_t *)0x0080A048;
+  return *ptr;
+}
+
+void hexstr(uint16_t v, char *buf, size_t Size) {
+  uint8_t i;
+  if (Size > 4) {
+    for (i = 0; i < 4; i++) {
+      buf[3 - i] = hex_chars[v >> (i * 4) & 0x0f];
+    }
+    buf[4] = '\0';
+  }
+}
+
+static void   WDTsync() {
+  while (WDT->STATUS.bit.SYNCBUSY == 1); //Just wait till WDT is free
+}
+
+void setupWDT( uint8_t period) {
+  GCLK->GENDIV.reg = GCLK_GENDIV_ID(5) | GCLK_GENDIV_DIV(4);
+  GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(5) |
+                      GCLK_GENCTRL_GENEN |
+                      GCLK_GENCTRL_SRC_OSCULP32K |
+                      GCLK_GENCTRL_DIVSEL;
+  while (GCLK->STATUS.bit.SYNCBUSY);  // Syncronize write to GENCTRL reg.
+  GCLK->CLKCTRL.reg = GCLK_CLKCTRL_ID_WDT |
+                      GCLK_CLKCTRL_CLKEN |
+                      GCLK_CLKCTRL_GEN_GCLK5;
+  WDT->CTRL.reg = 0; // disable watchdog
+  WDTsync(); // sync is required
+  WDT->CONFIG.reg = min(period, 11); // see Table 17-5 Timeout Period (valid values 0-11)
+  WDT->CTRL.reg = WDT_CTRL_ENABLE; //enable watchdog
+  WDTsync();
+}
+
+void systemReset() {  // use the WDT watchdog timer to force a system reset.
+  WDT->CLEAR.reg = 0x00; // system reset via WDT
+  WDTsync();
+}
+
+void resetWDT() {
+  WDT->CLEAR.reg = 0xA5; // reset the WDT
+  WDTsync();
+}
+
+void wake_from_sleep() {  //ISR runs whenever system wakes up from RTC
+}
+
+void rain_isr() {
+  tip_count++;
+  rain_interrupt = true;
+
+  // static unsigned long last_interrupt_time = 0;
+  // unsigned long interrupt_time = millis();
+  // // If interrupts come faster than 200ms, assume it's a bounce and ignore
+  // if (interrupt_time - last_interrupt_time > 200)
+  // {
+  //   ... do your thing
+  // }
+  // last_interrupt_time = interrupt_time;
+
+}
+
+void LoRaUpdate() {
+  char *pmsg;
+  String LoRaString = "PKT:" + dataString;
+  pmsg = (char*)LoRaString.c_str();
+  rf95.send((uint8_t *)pmsg, strlen(pmsg) + 1);
+  rf95.waitPacketSent();    //This takes 189ms
+}
+
+void sendLoRaRaw(String msg) {
+  char *ppmsg;
+  ppmsg = (char*)msg.c_str();
+  rf95.send((uint8_t *)ppmsg, strlen(ppmsg) + 1);
+  rf95.waitPacketSent();
+}
+
+void debug(String msg) {
+  char *ppmsg;
+  msg = "DBG:" + String(NodeID) + ":" + msg;
+  ppmsg = (char*)msg.c_str();
+  rf95.send((uint8_t *)ppmsg, strlen(ppmsg) + 1);
+  rf95.waitPacketSent();
+}
+
+void sendLoRaIgnore(String msg) { //Thrown out at the gateway
+  char *ppmsg;
+  msg = "IGN:" + String(NodeID) + ":" + msg;
+  ppmsg = (char*)msg.c_str();
+  rf95.send((uint8_t *)ppmsg, strlen(ppmsg) + 1);
+  rf95.waitPacketSent();
+}
+
+float battVoltUpdate() {
+  float BATT_LVL = analogRead(BATT);
+  BATT_LVL = BATT_LVL / 1024 * 2.23 * 2 + BV_OFFSET;
+  // BATT_LVL = BATT_LVL * (5.0 / 1023.0);
+  return BATT_LVL;
+}
+
+bool tempUpdate() { //Make sure battery power is connected.
+  tempSensors.requestTemperatures();
+  for (int i = 0;  i < sensor.temp.sensorCount;  i++) {
+    sensor.temp.measure[i] = tempSensors.getTempC(sensor.temp.addr[i]);
+  }
+  return true;
+}
+
+
+bool ALSUpdate() {
+
+  int wait = ALS_POWER_WAIT - (millis() - SensWakeTime);
+  delayUsingMillis(wait);
+
+  for (int i = 0; i < sensor.ALS.sensorCount ; i++) {
+    sensor.ALS.measure[i] = 0;
+    for (int k = 0; k < ALS_AVE_COUNT; k++) {
+
+      sensor.ALS.measure[i] += ads.readVoltage(0);    // Changed from sensor.ALS.measure[i] += ads.readVoltage(k+1); changed 12/04/23
+
+      delayUsingMillis(ALS_AVE_DELAY);
+    }
+    sensor.ALS.measure[i] = sensor.ALS.measure[i] / ALS_AVE_COUNT; //true makes a call, only do it once per poll session
+  }
+  convertALS();
+  return true;
+}
+
+
+bool RTCTempUpdate() {
+  sensor.RTCTemp.measure[0] = rtc.getTemperature();
+  return true;
+}
+
+bool USSUpdate() {
+  digitalWrite(FET_POWER, LOW);
+  delayUsingMillis(USS_INIT_TIME);
+  digitalWrite(USS_TRIG, LOW);
+  delayUsingMillis(1);
+  digitalWrite(USS_TRIG, HIGH);
+  delayUsingMillis(1);
+  digitalWrite(USS_TRIG, LOW);
+  double duration = pulseIn(USS_ECHO, HIGH);
+  float dist = duration / 2 * 0.000343;
+  delayUsingMillis(50);
+  sensor.USS.measure[0] = dist;   //Should return duration and have temp compensation
+  digitalWrite(FET_POWER, LOW);
+  return true;
+}
+
+void logDataToSD() {
+  logFile = SD.open((char*)fileNameStr.c_str(), FILE_WRITE);
+  // SerialUSB.println(SD.exists((char*)fileNameStr.c_str()));
+  logFile.println(dataString);
+  sendLoRaIgnore("Data logged to SD. File name = " + fileNameStr + ", size = " + String(logFile.size()) + " bytes");
+  // logFile.print(UNIXtimestamp);
+  logFileSize = logFile.size();
+  logFile.close();
+  if (logFileSize == 0) {
+    systemReset();
+    sendLoRaIgnore("Failed to write to log, restarting system");
+  }
+  if (logFileSize > MAX_LOG_SIZE_BYTES) {
+    logIncrement++;
+    fileNameStr = fileNameGen(logIncrement);
+    logFile = SD.open((char*)fileNameStr.c_str(), FILE_WRITE);
+    logFile.println(CSVHeader);
+    logFile.close();
+  }
+}
+
+void crashNflash(int identifier) {
+  while (1) {
+    for (int k = 0; k < identifier; k++) {
+      digitalWrite(LED, HIGH);
+      delayUsingMillis(50);
+      digitalWrite(LED, LOW);
+      delayUsingMillis(300);
+    }
+    delayUsingMillis(2000);
+  }
+}
+
+void buildTimestamps() {
+  String day;
+  String month;
+  String hour;
+  String minute;
+  String second;
+
+  DateTime now = rtc.now();
+  if ((tarSec < WRAP_AROUND_S_LOWER) && (now.second() >= 30)) { //We will favor being forward in time, so this won't happen often
+    delayUsingMillis((60 - int(now.second())) * 1000); //Wait until next second
+    now = rtc.now();
+    debug("Early wake, wasting power while waiting");//Wrap around occurring. Add 1 sec buffer to sleep time
+    // logFile = SD.open((char*)fileNameStr.c_str(), FILE_WRITE);
+    // logFile.println("Early wake, wasting power while waiting");
+    // logFile.close();
+  }
+  if ((tarSec >= WRAP_AROUND_S_UPPER) && (now.second() <= 30)) { //We will favor being forward in time, so this won't happen often
+    now = rtc.now();
+    debug("Late wake, RTC time in next minute");
+  }
+  if (tarSec < 10) {
+    second = "0" + String(tarSec, DEC);
+  } else {
+    second = String(tarSec, DEC);
+  }
+  if (now.day() < 10) {
+    day = "0" + String(now.day(), DEC);
+  } else {
+    day = String(now.day(), DEC);
+  }
+  if (now.month() < 10) {
+    month = "0" + String(now.month(), DEC);
+  } else {
+    month = String(now.month(), DEC);
+  }
+  if (now.hour() < 10) {
+    hour = "0" + String(now.hour(), DEC);
+  } else {
+    hour = String(now.hour(), DEC);
+  }
+  if (now.minute() < 10) {
+    minute = "0" + String(now.minute(), DEC);
+  } else {
+    minute = String(now.minute(), DEC);
+  }
+  normTimestamp = day + "/" + month + "/" + String(now.year(), DEC) + " " + hour + ":" + minute + ":" + second;
+  UNIXtimestamp = String(now.unixtime());
+}
+
+void buildCSVDataString() {
+  dataString = normTimestamp + ","; // formatted timestamp - first in string
+  dataString += siteID + ",";   //"SITE_ID" identifies packet to relevant gateway
+  dataString += NodeID + ",";   
+  dataString += String(FIRMWARE_VERSION) + ",";
+  dataString += String(tx_count, DEC) + ",";
+  dataString += String(lastUpTime) + ",";
+  dataString += String(logFileSize) + ",";
+  dataString += String(battVoltUpdate()) + ",";
+
+  if (sensor.temp.sensorCount > 0) {
+    for (int i = 0; i < sensor.temp.sensorCount; i++) {
+      dataString += String(sensor.temp.measure[i], 2) + ",";
+    }
+  }
+  if (sensor.RTCTemp.sensorCount > 0) {
+    for (int i = 0; i < sensor.RTCTemp.sensorCount; i++) {
+      dataString += String(sensor.RTCTemp.measure[i], 2) + ",";
+    }
+  }
+  if (sensor.ALS.sensorCount > 0) {
+    for (int i = 0; i < sensor.ALS.sensorCount; i++) {
+      dataString += String(sensor.ALS.measure[i], 2) + ",";
+      dataString += String(sensor.ALS.measure_2[i], 2) + ",";
+    }
+  }
+  if (sensor.USS.sensorCount > 0) {
+    for (int i = 0; i < sensor.USS.sensorCount; i++) {
+      dataString += String(sensor.USS.measure[i], 2) + ",";
+    }
+  }
+  dataString += String(turbidity_air_avg, 2) + ","; //RJ added
+  dataString += String(turbidity, 2) + ",";
+  dataString += String(tempHousingMedian, 2) + ","; 
+  dataString += String(adc2) + ",";
+}
+
+void configRead() {
+  String configFileName = "CFG_" + String(FIRMWARE_VERSION) + ".txt";
+  String key;
+  String value;
+  String line;
+  char * pch;
+  if (!SD.exists(configFileName)) {
+      sendLoRaIgnore(String(FIRMWARE_VERSION));
+    crashNflash(3);
+  }
+  configFile = SD.open((char*)configFileName.c_str());
+  while (configFile.available()) {
+    line = configFile.readStringUntil('\n');
+    key = strtok((char*)line.c_str(), "=");
+    value = strtok(NULL, ";");
+    if (value != "DEFAULT" && value != NULL) {
+      key.trim();
+      value.trim();
+      if (key == "Node_ID") {
+        NodeID = value;
+      } else if (key == "ALS_Slope") {
+        ALSslope = value.toDouble();
+      } else if (key == "ALS_Offset") {
+        ALSoffset = value.toDouble();
+      } else if (key == "LoRaPollOffset") {
+        LoRaPollOffset = value.toInt();
+      } else if (key == "PollPerLoRa") {
+        pollPerLoRa = value.toInt();
+      } else if (key == "Project_ID") {
+        project = value;
+      } else if (key == "Site_ID") {
+        siteID = value;
+      } else if (key == "Raingauge_mm") {
+        raingaugeTip_mm = value.toFloat();
+      } else if (key == "LoRa_EN") {
+        LoRaEnabled = value.toInt();
+      } else if (key == "SD_EN") {
+        SDEnabled = value.toInt();
+      } else if (key == "ALS_Count") {
+        sensor.ALS.sensorCount = value.toInt();
+      } else if (key == "ALS_Period") {
+        if (sensor.ALS.sensorCount != 0) {
+          sensor.ALS.pollPeriod = value.toInt();
+        }
+      } else if (key == "Temp_Count") {
+        // sensor.temp.sensorCount = value.toInt(); Auto detected
+      } else if (key == "Temp_Period") {
+        if (sensor.temp.sensorCount != 0) {
+          sensor.temp.pollPeriod = value.toInt();
+        }
+      } else if (key == "USS_Count") {
+        sensor.USS.sensorCount = value.toInt();
+      } else if (key == "USS_Period") {
+        if (sensor.USS.sensorCount != 0) {
+          sensor.USS.pollPeriod = value.toInt();
+        }
+      } else if (key == "RTC_Temp_Count") {
+        sensor.RTCTemp.sensorCount = value.toInt();
+      } else if (key == "RTC_Temp_Period") {
+        if (sensor.RTCTemp.sensorCount != 0) {
+          sensor.RTCTemp.pollPeriod = value.toInt();
+        }
+      }
+      else if (key == "ALS_cal_temps") {
+        int i = 0;
+        pch = strtok((char*)value.c_str(), "{},");
+        while (pch != NULL) {
+          ALSCal.temp[i] = atof(pch);
+          sendLoRaIgnore("Temp " + String(i) + " = " + String(ALSCal.temp[i]));
+          pch = strtok (NULL, ",{}");
+          i++;
+        }
+      }
+      else if (key == "ALS_cal_slopes") {
+        int i = 0;
+        pch = strtok((char*)value.c_str(), "{},");
+        while (pch != NULL) {
+          ALSCal.slope[i] = atof(pch);
+          sendLoRaIgnore("slope " + String(i) + " = " + String(ALSCal.slope[i]));
+          pch = strtok (NULL, ",{}");
+          i++;
+        }
+      }
+      else if (key == "ALS_cal_offsets") {
+        int i = 0;
+        pch = strtok((char*)value.c_str(), "{},");
+        while (pch != NULL) {
+          ALSCal.offset[i] = atof(pch);
+          sendLoRaIgnore("Offset " + String(i) + " = " + String(ALSCal.offset[i]));
+          pch = strtok (NULL, ",{}");
+          i++;
+        }
+      }
+      else if (key == "tpumptme") {
+        tpumptme = value.toInt();
+      }
+      else if (key =="tbflshtm") {
+        tbflshtm = value.toInt();
+      }
+      else if (key == "dryread") {
+        dryReadTimes = value.toInt();
+      }
+      else if (key == "wetread") {
+        wetReadTimes = value.toInt();
+      }
+      else if (key == "minh2o") {
+        minh2o = value.toInt();
+      }
+      else if (key == "turbPd") {
+        turbPeriod = value.toInt();
+      }
+    }
+
+  }
+  configFile.close();
+}
+
+void wake_system() {
+  digitalWrite(FET_POWER, LOW);
+  digitalWrite(ONE_WIRE_POWER, HIGH);
+  SensWakeTime = millis();
+}
+
+void sleep_system() {
+  digitalWrite(FET_POWER, HIGH);
+  digitalWrite(ONE_WIRE_POWER, LOW);
+}
+
+void disableWatchdog() {
+  WDT->CTRL.reg = 0;
+}
+
+void sleepTillSynced() { //Initial clock sync
+  rf95.sleep();
+  delayUsingMillis(20);    //Delay 20ms to ensure the chips have gone to sleep before powering off the board
+  WDT->CTRL.reg = 0; // disable watchdog
+  DateTime now = rtc.now();
+  // sleep_remaining_s = pollPeriod*60 - (now.minute()%pollPeriod)*60 - now.second();
+  int relativeTimeS = (now.minute() * 60 + now.second()) % (pollPeriod * pollPerLoRa * 60);
+  if (relativeTimeS > LoRaPollOffset) {
+    sleep_remaining_s = pollPeriod * pollPerLoRa * 60 - relativeTimeS + LoRaPollOffset;
+  }
+  else if (relativeTimeS < LoRaPollOffset) {
+    sleep_remaining_s = LoRaPollOffset - relativeTimeS;
+  }
+  sleep();
+}
+
+void convertALS() {
+  double Slope;
+  double Offset;
+  float linearInterpRatio;
+
+  for (int i = 0; i < sensor.ALS.sensorCount; i++) {    //Per each ALS sensor
+    if (sensor.temp.measure[i] < ALSCal.temp[0]) { //Temperature below minimum
+      Slope = ALSCal.slope[0];
+      Offset = ALSCal.offset[0];
+      // debug("Below min calibrated ALS temp");
+    }
+    else {
+      for (int j = 1; j < MAX_ALS_CAL_POINTS - 1 ; j++) {
+        if (ALSCal.temp[j] == 0) { //Temperature above maximum
+          Slope = ALSCal.slope[j - 1];
+          Offset = ALSCal.offset[j - 1];
+          // debug("Above max calibrated ALS temp");
+          break;
+        }
+        else if (sensor.temp.measure[i] < ALSCal.temp[j]) {
+          linearInterpRatio = (sensor.temp.measure[i] - ALSCal.temp[j - 1]) / (ALSCal.temp[j] - ALSCal.temp[j - 1]);
+          Slope = linearInterpRatio * (ALSCal.slope[j] - ALSCal.slope[j - 1]) + ALSCal.slope[j - 1];
+          Offset = linearInterpRatio * (ALSCal.offset[j] - ALSCal.offset[j - 1]) + ALSCal.offset[j - 1];
+          break;
+        }
+      }
+    }
+    sensor.ALS.measure_2[i] = sensor.ALS.measure[i] * Slope + Offset;
+  }
+}
+
+void bubbleSort(int a[], int arrayIndex[], int size) {
+  for (int i = 0; i < (size - 1); i++) {
+    for (int o = 0; o < (size - (i + 1)); o++) {
+      if (a[o] > a[o + 1]) {
+        int t = a[o];
+        a[o] = a[o + 1];
+        a[o + 1] = t;
+
+        int tmp = arrayIndex[o];
+        arrayIndex[o] = arrayIndex[o + 1];
+        arrayIndex[o + 1] = tmp;
+      }
+    }
+  }
+}
+
+void OneWireTempSetup() {
+  int humanVal[4];
+  pinMode(ONE_WIRE_POWER, OUTPUT);
+  digitalWrite(ONE_WIRE_POWER, HIGH); //Turn on sensor
+  delayUsingMillis(TEMP_INIT_TIME); //Wait till we are warmed up
+  tempSensors.begin();  // Start up the library
+  sensor.temp.sensorCount = tempSensors.getDeviceCount(); //Check how many devices are attached
+  sendLoRaIgnore("Temp sens count: " + String(sensor.temp.sensorCount));
+  tempSensors.requestTemperatures();
+  for (int i = 0;  i < sensor.temp.sensorCount;  i++) { //For each sensor, grab the value we will label with (Nibble 1 and 7 of full device address)
+    tempSensors.getAddress(Thermometer, i);
+    humanVal[i] = 256 * Thermometer[1] + Thermometer[2];
+    sendLoRaIgnore("Temp_Address_" + String(i) + " = " + String(humanVal[i]) + ". Temp = " + String(tempSensors.getTempCByIndex(i)));
+  }
+  int arrayIndex[4] = {0, 1, 2, 3}; //This is how we will keep track of the order of the devices after sorting
+  bubbleSort(humanVal, arrayIndex, sensor.temp.sensorCount);  //Sorts from smallest to largest. arrayIndex tells us where each value moved.
+  for (int i = 0;  i < sensor.temp.sensorCount;  i++) { //For each sensor
+    // tempSensors.getAddress(Thermometer, i);   //Read address
+    tempSensors.getAddress(sensor.temp.addr[i], arrayIndex[i]);   //Assign addresses so that temp_1 will be the smallest address. Associate with relevant ALS probe.
+    sendLoRaIgnore("HumanValOrdered_" + String(i) + " = " + String(humanVal[i]));
+
+  }
+  digitalWrite(ONE_WIRE_POWER, LOW);  //Switch off temp sensor
+}
+
+void debugWrite(String dbg){
+  logFile = SD.open("debug.txt", FILE_WRITE);
+  logFile.println(dbg);
+  logFile.close();
+  }
+
+void TurbMeasure(String nameOfFile, int howManyReads) {
+  for (int i = 0; i < howManyReads; i++) {
+    resetWDT();
+    tempUpdate();
+    voltageMeasurementArray[i] = ads.readVoltage(1);
+    tempHousingMeasurementArray[i] = sensor.temp.measure[0];
+    tempWaterMeasurementArray[i] = sensor.temp.measure[1]; 
+    delayUsingMillis(turbPeriod);
+  }
+  voltageMedian = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float));
+  tempHousingMedian = QuickMedian<float>::GetMedian(tempHousingMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float));
+  sendLoRaIgnore("saving turb data, starting at " + String(millis()) + " ms");
+  SaveTurbData(nameOfFile, howManyReads);
+  sendLoRaIgnore("saving turb data, finished at " + String(millis()) + " ms");
+}
+
+void SaveTurbData(String nameOfFile, int howManyReads){ //Used to save turbidity raw voltage
+  String csvObject = "";
+  if (!SD.exists(nameOfFile)) {
+    csvObject = "Site_name,DateTime [DDMMYY HH:MM:SS],Timestamp[s],Measure_number[-],Turbidity voltage[mV],Housing Temp[c],Water Temp[c]\n";
+  }
+  logFile = SD.open(nameOfFile, FILE_WRITE);
+  digitalWrite(LED_BUILTIN, HIGH);
+  if (!logFile) {
+    sendLoRaIgnore("Initial open failed for " + nameOfFile + ", retrying SD init");
+    debugWrite("Initial open failed for " + nameOfFile + ", retrying SD init");
+    if (SD.begin(SD_SPI_CS)) {
+      logFile = SD.open(nameOfFile, FILE_WRITE);
+    }
+  }
+  if (!logFile && SD.exists(nameOfFile)) {
+    sendLoRaIgnore("Open failed for existing " + nameOfFile + ", removing and retrying");
+    debugWrite("Open failed for existing " + nameOfFile + ", removing and retrying");
+    SD.remove(nameOfFile);
+    logFile = SD.open(nameOfFile, FILE_WRITE);
+  }
+  if (!logFile) {
+    sendLoRaIgnore("Failed to open " + nameOfFile + " for turbidity logging after retry");
+    debugWrite("Failed to open " + nameOfFile + " for turbidity logging after retry");
+    return;
+  }
+  for (int i = 0; i < howManyReads; i++){
+    csvObject = csvObject + siteID + NodeID + "," + normTimestamp + "," + UNIXtimestamp + "," + String(tx_count, DEC) + "," + String(voltageMeasurementArray[i],4) + "," + String(tempHousingMeasurementArray[i],2) + "," + String(tempWaterMeasurementArray[i],2);
+    logFile.println(csvObject);
+    csvObject = "";
+  }
+  logFile.close();
+}
+
+void forwardPump(){
+    for (int i = 0; i < tpumptme; i++ ) {
+      delayUsingMillis(1000); //KR - testing if delayUsingMillis(1000) gives good timing behaviour of tpumptme seconds
+      resetWDT();
+    } // Wait for tPumpTme seconds before making a turbidity measure
+}
+
+void reversePump(){
+    for (int i = 0; i < tbflshtm; i++) {
+      delayUsingMillis(1000); //KR - testing if delayUsingMillis(1000) gives good timing behaviour
+      resetWDT();
+    }
+  }
+
+void delayUsingMillis(unsigned long period) {
+    unsigned long start = millis();
+    while (millis() - start < period) {
+      resetWDT();
+      yield();
+    }
+}
+
+// Function for callback for SD.h to write time metadata
+void dateTime(uint16_t* date, uint16_t* time) {
+  DateTime now = rtc.now();
+  // return date using FAT_DATE macro to format fields
+  *date = FAT_DATE(now.year(), now.month(), now.day());
+
+  // return time using FAT_TIME macro to format fields
+  *time = FAT_TIME(now.hour(), now.minute(), now.second());
+}
