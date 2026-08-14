@@ -134,7 +134,7 @@ String fileNameStr;
 String dataString;
 int sleep_now_time;
 int sleep_remaining_s = 0;
-uint8_t tx_count = 0;
+uint32_t tx_count = 0;
 char addr[5];
 char hex_chars[] = "0123456789ABCDEF";
 int Year;
@@ -145,9 +145,9 @@ int tarSec;
 int loraPollCount = pollPerLoRa;
 String CSVHeader;
 int logIncrement = 97;  //ASCII lowercase a
-int lastUpTime = 0;
-int WakeTime = 0;
-int SensWakeTime = 0;
+unsigned long lastUpTime = 0;
+unsigned long WakeTime = 0;
+unsigned long SensWakeTime = 0;
 bool dailyReset = false;
 
 float voltageMeasurementArray[10];
@@ -411,8 +411,7 @@ void loop () {
     sendLoRaIgnore("begin dry read");
     TurbMeasure(TURB_DRY_READ, dryReadTimes);  //Make dry read and wet read configurable
     turbidity_air_avg = voltageMedian; // use raw voltage, do not calculate NTU
-    sendLoRaIgnore("median dry read voltage = " + (String(turbidity_air_avg)) + " V");
-    sendLoRaIgnore("end of dry read & pump starts sampling");
+    // sendLoRaIgnore("end of dry read & pump starts sampling");
     delayUsingMillis(10);
     digitalWrite(TURBIDITY_MOTOR_FORWARD, HIGH);// Run the pump forward for tpumptme seconds
     sendLoRaIgnore("turn on forward pump for " + (String(tpumptme)) + " sec");
@@ -420,15 +419,14 @@ void loop () {
     sendLoRaIgnore("begin wet read");
     TurbMeasure(TURB_WET_READ, wetReadTimes);
     turbidity = voltageMedian; // use raw voltage, do not calculate NTU
-    sendLoRaIgnore("median wet read voltage = " + (String(turbidity)) + " V");
-    sendLoRaIgnore("turn off forward pump");
+    // sendLoRaIgnore("turn off forward pump");
     digitalWrite(TURBIDITY_MOTOR_FORWARD, LOW); // Turn off forward pump
     delayUsingMillis(500); // delay before running pump in reverse
     sendLoRaIgnore("turn on reverse pump for " + (String(tbflshtm)) + " sec");
     digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, HIGH); // Turn on pump reverse for tbflshtm seconds
     reversePump();
     digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, LOW); // Turn off reverse pump
-    sendLoRaIgnore("turn off reverse pump");
+    // sendLoRaIgnore("turn off reverse pump");
     delayUsingMillis(10);
   } else {
     debugWrite(normTimestamp+": Not enough water, skipping Turbidity measure \n");
@@ -468,7 +466,6 @@ void loop () {
   sleep();
   WakeTime = millis();  //For wake period calculation
   setupWDT( WATCHDOG_TIMER_MS ); // initialize and activate WDT with maximum period
-  sendLoRaIgnore("time at end of loop: " + String(millis()) + " ms");
 }
 
 
@@ -989,7 +986,7 @@ void OneWireTempSetup() {
   for (int i = 0;  i < sensor.temp.sensorCount;  i++) { //For each sensor
     // tempSensors.getAddress(Thermometer, i);   //Read address
     tempSensors.getAddress(sensor.temp.addr[i], arrayIndex[i]);   //Assign addresses so that temp_1 will be the smallest address. Associate with relevant ALS probe.
-    sendLoRaIgnore("HumanValOrdered_" + String(i) + " = " + String(humanVal[i]));
+    // sendLoRaIgnore("HumanValOrdered_" + String(i) + " = " + String(humanVal[i]));
 
   }
   digitalWrite(ONE_WIRE_POWER, LOW);  //Switch off temp sensor
