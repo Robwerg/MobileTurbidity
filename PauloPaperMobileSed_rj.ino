@@ -4,7 +4,7 @@
   Forked by Axel Baylon axelbaylon@hotmail.com based off
   Kai James kaicjames@outlook.com code for Melt Sensors
 */
-#include <SDI12.h>
+
 #include <RTClib.h>
 #include <Wire.h>
 #include <SD.h>
@@ -20,7 +20,6 @@
 #define SLEEP_ENABLED         (true)    //Disable to keep serial coms alive for testing
 #define FIRMWARE_VERSION      (001)
 #define BV_OFFSET             (0.01)
-#define OTT_OFFSET            (0.15)
 #define ALS_POWER_WAIT        (1000) //Depends on probe. 1000 is safe
 #define RTC_OFFSET_S          (12)
 #define WRAP_AROUND_S_LOWER   (11)
@@ -36,7 +35,6 @@
 //Hardware pins
 #define ONE_WIRE_BUS          (5)        //One wire temp sensors
 #define ONE_WIRE_POWER        (2)        //One wire temp sensors
-#define RAIN_GAUGE_INT        (9)
 #define DATA_PIN              (12)          // The pin of the SDI-12 data bus
 #define SD_SPI_CS             (A4)
 #define USS_ECHO              (A2)
@@ -45,6 +43,9 @@
 #define LED                   (13)
 #define FET_POWER             (4)
 #define BATT                  (A5)
+#define TURBIDITY_MOTOR_FORWARD (A0)
+#define TURBIDITY_MOTOR_REVERSE_PIN (A1)
+#define pumpspeed             (3) //D3 D4 D5 D9 are pwm output pins 8bit
 //I2C Addressing
 #define ADC_ADDR              (0x48)
 #define RTC_ADDR              (0x68)  //Set automatically, here as a reminder
@@ -52,12 +53,10 @@
 #define WATCHDOG_TIMER_MS     (11)   //Valid values: 0-11. 11 gives 16s timeout. 10 gives 8s timeout and so on  //resetWDT(); as necessary
 #define LORA_FREQUENCY        (919.9)
 #define LORA_BANDWIDTH        (125000)  //Increase to 250000 or 500000 for increased speed, less range. Linear change.
-
-#define TURBIDITY_MOTOR_FORWARD (A0)
-#define TURBIDITY_MOTOR_REVERSE_PIN (A1)
-#define pumpspeed             (3) //D3 D4 D5 D9 are pwm output pins 8bit
+//File names
 #define TURB_DRY_READ    "TURBDRY.csv" // limited to 8 characters plus extension
 #define TURB_WET_READ   "TURBRAW.csv" // limited to 8 characters plus extension
+//Default turbidity sensor settings
 #define DEFAULT_PUMP_TIME 10 //forward pump time in seconds before wet read starts, to draw water into the sensor
 #define DEFAULT_BACKFLUSH 10 //reverse pump time in seconds after wet read ends, to backflush the turbidity sensor
 #define DEFAULT_READ_COUNT 10 //number of turbidity readings to take for median calculation
@@ -72,7 +71,6 @@ int LoRaPollOffset = 23;
 int pollPerLoRa = 6;
 String project = "TST";
 String siteID = "AA";
-float raingaugeTip_mm = 0.2;
 bool LoRaEnabled = true;
 bool SDEnabled = true;
 int logFileSizeLast = 10;
@@ -108,11 +106,9 @@ typedef struct {
 ALSCal_t ALSCal;
 
 typedef struct {
-  value_t rainGauge;
   value_t temp;
   value_t RTCTemp;
   value_t ALS;
-  value_t OTT;
   value_t USS;
 } sensor_t;
 sensor_t sensor;
@@ -127,7 +123,6 @@ DeviceAddress hello;
 
 RTC_DS3231 rtc;
 DFRobot_ADS1115 ads(&Wire);
-SDI12 mySDI12(DATA_PIN);
 RTCZero internalrtc;
 
 int pollPeriod;
@@ -154,9 +149,6 @@ int lastUpTime = 0;
 int WakeTime = 0;
 int SensWakeTime = 0;
 bool dailyReset = false;
-float rainfall_mm = 0;
-volatile uint16_t tip_count = 0;
-volatile bool rain_interrupt = false;
 
 float voltageMeasurementArray[10];
 float tempHousingMeasurementArray[10]; // lower number temp sensor
@@ -174,6 +166,7 @@ int adc2 = 0;
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void setup () {
+  // Initialize hardware, comms, sensors, sync RTC and prepare log file
   setupWDT( WATCHDOG_TIMER_MS );
   analogReference(AR_INTERNAL2V23); //For internal battery level calculation
   pinMode(TURBIDITY_MOTOR_FORWARD, OUTPUT); // set pump pin to output
@@ -223,9 +216,10 @@ void setup () {
   OneWireTempSetup(); //Must auto detect sensors BEFORE configRead()
   configRead();
   sendLoRaIgnore("Config updated");
-  sendLoRaIgnore("forward pump time tpumptme = " + String(tpumptme) + " sec"); //ensuring tpumptme is pulled from config.
-  sendLoRaIgnore("reverse pump time tbflshtm = " + String(tbflshtm) + " sec"); //ensuring tpumptme is pulled from config.
-  sendLoRaIgnore("period between turbidity measures turbPeriod = " + String(turbPeriod) + "ms"); //ensuring turbPeriod is pulled from config.
+  sendLoRaIgnore("forward pump time = " + String(tpumptme) + " sec"); //ensuring tpumptme is pulled from config.
+  sendLoRaIgnore("reverse pump time = " + String(tbflshtm) + " sec"); //ensuring tpumptme is pulled from config.
+  sendLoRaIgnore("number of turbidity measures per reading = " + String(wetReadTimes));
+  sendLoRaIgnore("period between turbidity measures = " + String(turbPeriod) + "ms"); //ensuring turbPeriod is pulled from config.
 
   Wire.begin(); //Might not need this
   pinMode(LED, OUTPUT);
@@ -236,10 +230,6 @@ void setup () {
   pinMode(USS_ECHO, INPUT);
   digitalWrite(USS_TRIG, LOW);
 
-  // //OTT probe
-  // if (sensor.OTT.sensorCount > 0) {
-  //   mySDI12.begin();
-  // }
   ads.setAddr_ADS1115(ADS1115_IIC_ADDRESS0);   // 0x48
   ads.setGain(eGAIN_TWOTHIRDS);   // 2/3x gain
   ads.setMode(eMODE_SINGLE);       // single-shot mode
@@ -368,6 +358,7 @@ void setup () {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void loop () {
+  // Main operation: wake, sample sensors, perform turbidity routine, log and sleep
   while (TEST_LOOP) {
     disableWatchdog();
     digitalWrite(LED, HIGH);
@@ -462,26 +453,19 @@ void loop () {
   rf95.sleep();
   delayUsingMillis(20);    //Delay 20ms to ensure the chips have gone to sleep before powering off the board
   disableWatchdog(); // disable watchdog
-  rain_interrupt = false;
-  bool first_loop = true;
   now = rtc.now();
   lastUpTime = millis() - WakeTime;
-  while ((first_loop || rain_interrupt)) {
-    if (first_loop) { //REMEMBER first loop is relative to this wake cycle considering rain interupt. NOT first_loop for the whole system.
-      first_loop = false;
-      if ((tarSec < WRAP_AROUND_S_LOWER) && (now.second() >= 30))  { //Wrap down case
-        sleep_remaining_s = pollPeriod * 60 + tarSec - (-60 + now.second()) + 1 + WRAP_AROUND_BUFF;
-      }
-      else if ((tarSec > WRAP_AROUND_S_UPPER) && (now.second() <= 30)) { //Wrap up case
-        sleep_remaining_s = pollPeriod * 60 + tarSec - (60 + now.second()) - 1 + WRAP_AROUND_BUFF;
-      }
-      else {  //Standard time correction
-        sleep_remaining_s = pollPeriod * 60 + tarSec - now.second() + WRAP_AROUND_BUFF;
-      }
-    }
-    rain_interrupt = false;
-    sleep();
+  // Compute sleep interval (single pass; no rain interrupt wake)
+  if ((tarSec < WRAP_AROUND_S_LOWER) && (now.second() >= 30))  { //Wrap down case
+    sleep_remaining_s = pollPeriod * 60 + tarSec - (-60 + now.second()) + 1 + WRAP_AROUND_BUFF;
   }
+  else if ((tarSec > WRAP_AROUND_S_UPPER) && (now.second() <= 30)) { //Wrap up case
+    sleep_remaining_s = pollPeriod * 60 + tarSec - (60 + now.second()) - 1 + WRAP_AROUND_BUFF;
+  }
+  else {  //Standard time correction
+    sleep_remaining_s = pollPeriod * 60 + tarSec - now.second() + WRAP_AROUND_BUFF;
+  }
+  sleep();
   WakeTime = millis();  //For wake period calculation
   setupWDT( WATCHDOG_TIMER_MS ); // initialize and activate WDT with maximum period
   sendLoRaIgnore("time at end of loop: " + String(millis()) + " ms");
@@ -512,6 +496,7 @@ void updatePollFreq() {
 }
 
 void sleep() {
+  // Sleep until next RTC alarm or for computed interval
   sleep_now_time = internalrtc.getEpoch();
   if (sleep_remaining_s > 0) {
     if (SLEEP_ENABLED) {
@@ -579,20 +564,6 @@ void resetWDT() {
 void wake_from_sleep() {  //ISR runs whenever system wakes up from RTC
 }
 
-void rain_isr() {
-  tip_count++;
-  rain_interrupt = true;
-
-  // static unsigned long last_interrupt_time = 0;
-  // unsigned long interrupt_time = millis();
-  // // If interrupts come faster than 200ms, assume it's a bounce and ignore
-  // if (interrupt_time - last_interrupt_time > 200)
-  // {
-  //   ... do your thing
-  // }
-  // last_interrupt_time = interrupt_time;
-
-}
 
 void LoRaUpdate() {
   char *pmsg;
@@ -683,6 +654,7 @@ bool USSUpdate() {
 }
 
 void logDataToSD() {
+  // Open data log for append, write CSV line and handle rotation on size limit
   logFile = SD.open((char*)fileNameStr.c_str(), FILE_WRITE);
   // SerialUSB.println(SD.exists((char*)fileNameStr.c_str()));
   logFile.println(dataString);
@@ -716,6 +688,7 @@ void crashNflash(int identifier) {
 }
 
 void buildTimestamps() {
+  // Create human-readable and UNIX timestamps aligned to configured poll second
   String day;
   String month;
   String hour;
@@ -765,6 +738,7 @@ void buildTimestamps() {
 }
 
 void buildCSVDataString() {
+  // Compose the CSV line for telemetry from all enabled sensors and metrics
   dataString = normTimestamp + ","; // formatted timestamp - first in string
   dataString += siteID + ",";   //"SITE_ID" identifies packet to relevant gateway
   dataString += NodeID + ",";   
@@ -802,6 +776,7 @@ void buildCSVDataString() {
 }
 
 void configRead() {
+  // Parse CFG_<FW>.txt and populate runtime configuration and calibration
   String configFileName = "CFG_" + String(FIRMWARE_VERSION) + ".txt";
   String key;
   String value;
@@ -833,8 +808,6 @@ void configRead() {
         project = value;
       } else if (key == "Site_ID") {
         siteID = value;
-      } else if (key == "Raingauge_mm") {
-        raingaugeTip_mm = value.toFloat();
       } else if (key == "LoRa_EN") {
         LoRaEnabled = value.toInt();
       } else if (key == "SD_EN") {
@@ -845,8 +818,6 @@ void configRead() {
         if (sensor.ALS.sensorCount != 0) {
           sensor.ALS.pollPeriod = value.toInt();
         }
-      } else if (key == "Temp_Count") {
-        // sensor.temp.sensorCount = value.toInt(); Auto detected
       } else if (key == "Temp_Period") {
         if (sensor.temp.sensorCount != 0) {
           sensor.temp.pollPeriod = value.toInt();
@@ -919,12 +890,14 @@ void configRead() {
 }
 
 void wake_system() {
+  // Power on FET and one-wire sensors before sampling
   digitalWrite(FET_POWER, LOW);
   digitalWrite(ONE_WIRE_POWER, HIGH);
   SensWakeTime = millis();
 }
 
 void sleep_system() {
+  // Power down sensors to save energy before sleeping
   digitalWrite(FET_POWER, HIGH);
   digitalWrite(ONE_WIRE_POWER, LOW);
 }
@@ -950,6 +923,7 @@ void sleepTillSynced() { //Initial clock sync
 }
 
 void convertALS() {
+  // Convert raw ALS using temperature-dependent calibration via linear interpolation
   double Slope;
   double Offset;
   float linearInterpRatio;
@@ -1028,6 +1002,7 @@ void debugWrite(String dbg){
   }
 
 void TurbMeasure(String nameOfFile, int howManyReads) {
+  // Collect raw turbidity voltage and temperature arrays, compute medians
   for (int i = 0; i < howManyReads; i++) {
     resetWDT();
     tempUpdate();
@@ -1038,12 +1013,11 @@ void TurbMeasure(String nameOfFile, int howManyReads) {
   }
   voltageMedian = QuickMedian<float>::GetMedian(voltageMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float));
   tempHousingMedian = QuickMedian<float>::GetMedian(tempHousingMeasurementArray, sizeof(voltageMeasurementArray) / sizeof(float));
-  sendLoRaIgnore("saving turb data, starting at " + String(millis()) + " ms");
   SaveTurbData(nameOfFile, howManyReads);
-  sendLoRaIgnore("saving turb data, finished at " + String(millis()) + " ms");
 }
 
 void SaveTurbData(String nameOfFile, int howManyReads){ //Used to save turbidity raw voltage
+  // Append raw turbidity measurements to a dedicated CSV file
   String csvObject = "";
   if (!SD.exists(nameOfFile)) {
     csvObject = "Site_name,DateTime [DDMMYY HH:MM:SS],Timestamp[s],Measure_number[-],Turbidity voltage[mV],Housing Temp[c],Water Temp[c]\n";
@@ -1077,6 +1051,7 @@ void SaveTurbData(String nameOfFile, int howManyReads){ //Used to save turbidity
 }
 
 void forwardPump(){
+    // Run forward pump for configured seconds while servicing WDT
     for (int i = 0; i < tpumptme; i++ ) {
       delayUsingMillis(1000); //KR - testing if delayUsingMillis(1000) gives good timing behaviour of tpumptme seconds
       resetWDT();
@@ -1084,6 +1059,7 @@ void forwardPump(){
 }
 
 void reversePump(){
+    // Run reverse pump for configured seconds while servicing WDT
     for (int i = 0; i < tbflshtm; i++) {
       delayUsingMillis(1000); //KR - testing if delayUsingMillis(1000) gives good timing behaviour
       resetWDT();

@@ -13,26 +13,15 @@ PollPerLoRa	=1;		//Cycles per LoRa packet
 LoRa_EN		=1;		//LoRa enabled. Set 0 or 1
 SD_EN		=1;		//SD logging enabled. Set 0 or 1
 
-;LORA REPEATER SETTINGS__________________________________________
-;LoRaRepeater	=0;		//Set as 1 to use exclusively as LoRa repeater
-;Nodes_to_repeat ={BBMO,BBBA,ASSS};	//Max 10 nodes
-
 SENSORS_________________________________________________________
-; consider removing these options and considering the sensors as fixed in the code
 ALS_Count	=1;		//How many ALS sensors connected (0 or 1)
 ALS_Period	=1;		//ALS poll period (minutes)
 ALS_cal_temps	={4,33};	//From smallest to largest
 ALS_cal_slopes	={0.51100871263227,0.51100871263227};		//Same order as temp
 ALS_cal_offsets	={-505,-505};	//Same order as temp
-Temp_Count	=2;		//This is automatically detected. No need to change
 Temp_Period	=1;		//Temp poll period (minutes)
 USS_Count	=0;		//How many Ultrasonic sensors connected
 USS_Period	=DEFAULT;	//USS poll period (minutes)
-;OTT_Count	=0;		//How many OTT probes connected
-;OTT_Period	=DEFAULT;	//OTT poll period (minutes)
-;Raingauge_Count	=0;	//How many rain gauges connected
-;Raingauge_Period=DEFAULT;	//Raingauge poll period (minutes)
-;Raingauge_mm	=DEFAULT;	//Raingauge tip volume (mm)
 RTC_Temp_Count	=1;		//Use RTC temperature. Set 0 or 1
 RTC_Temp_Period	=1;		//RTC temp poll period (minutes)
 
