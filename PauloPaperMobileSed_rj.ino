@@ -134,7 +134,7 @@ String fileNameStr;
 String dataString;
 int sleep_now_time;
 int sleep_remaining_s = 0;
-uint32_t tx_count = 0;
+uint8_t tx_count = 0;
 char addr[5];
 char hex_chars[] = "0123456789ABCDEF";
 int Year;
