@@ -408,21 +408,21 @@ void loop () {
 
   if (sensor.ALS.measure_2[0] > minh2o) {
     analogWrite(pumpspeed, 255); //max 255
-    sendLoRaIgnore("begin dry read");
+    //sendLoRaIgnore("begin dry read");
     TurbMeasure(TURB_DRY_READ, dryReadTimes);  //Make dry read and wet read configurable
     turbidity_air_avg = voltageMedian; // use raw voltage, do not calculate NTU
     // sendLoRaIgnore("end of dry read & pump starts sampling");
     delayUsingMillis(10);
     digitalWrite(TURBIDITY_MOTOR_FORWARD, HIGH);// Run the pump forward for tpumptme seconds
-    sendLoRaIgnore("turn on forward pump for " + (String(tpumptme)) + " sec");
+    //sendLoRaIgnore("turn on forward pump for " + (String(tpumptme)) + " sec");
     forwardPump();
-    sendLoRaIgnore("begin wet read");
+    //sendLoRaIgnore("begin wet read");
     TurbMeasure(TURB_WET_READ, wetReadTimes);
     turbidity = voltageMedian; // use raw voltage, do not calculate NTU
     // sendLoRaIgnore("turn off forward pump");
     digitalWrite(TURBIDITY_MOTOR_FORWARD, LOW); // Turn off forward pump
     delayUsingMillis(500); // delay before running pump in reverse
-    sendLoRaIgnore("turn on reverse pump for " + (String(tbflshtm)) + " sec");
+    //sendLoRaIgnore("turn on reverse pump for " + (String(tbflshtm)) + " sec");
     digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, HIGH); // Turn on pump reverse for tbflshtm seconds
     reversePump();
     digitalWrite(TURBIDITY_MOTOR_REVERSE_PIN, LOW); // Turn off reverse pump
@@ -655,7 +655,7 @@ void logDataToSD() {
   logFile = SD.open((char*)fileNameStr.c_str(), FILE_WRITE);
   // SerialUSB.println(SD.exists((char*)fileNameStr.c_str()));
   logFile.println(dataString);
-  sendLoRaIgnore("Data logged to SD. File name = " + fileNameStr + ", size = " + String(logFile.size()) + " bytes");
+  //sendLoRaIgnore("Data logged to SD. File name = " + fileNameStr + ", size = " + String(logFile.size()) + " bytes");
   // logFile.print(UNIXtimestamp);
   logFileSize = logFile.size();
   logFile.close();
